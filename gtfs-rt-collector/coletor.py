@@ -5,8 +5,11 @@ Equipe 5 - CIN0144
 =============================================================
 
 O QUE FAZ:
-  Chama a API publica da BHTrans a cada 1 minuto e salva os
+  Chama a API publica da BHTrans a cada 3 minutos e salva os
   dados de atraso de todos os onibus em operacao num CSV.
+  Cada chamada retorna ~400 registros (1 por viagem em andamento).
+  Ao longo do dia, captura cada onibus em diferentes paradas,
+  construindo um historico de delays reais.
 
 COMO RODAR:
   1. pip install gtfs-realtime-bindings requests
@@ -33,14 +36,18 @@ from datetime import datetime
 
 # URL da API publica da BHTrans (Portal de Dados Abertos de BH)
 # Cada chamada retorna o estado atual de todos os onibus
+# Fonte: https://dados.pbh.gov.br/dataset/gtfs-rt
 URL = "http://realtime4.mobilibus.com/web/4ch6j/trip-updates?accesskey=982a57efd77a9462bf1665696fb25984"
 
 # Pasta onde os CSVs serao salvos
 PASTA_DADOS = "dados"
 
 # Intervalo entre coletas (em segundos)
-# 60 = a cada 1 minuto
-INTERVALO = 60
+# 180 = a cada 3 minutos
+# Justificativa: cada viagem reporta 1 parada por chamada.
+# A cada 3 min, o onibus avanca ~1-2 paradas, permitindo
+# capturar ~20-25 paradas por viagem ao longo da rota.
+INTERVALO = 180
 
 
 # =============================================================
@@ -90,9 +97,10 @@ def coletar_uma_vez():
     """
     Faz UMA chamada a API e salva os dados no CSV do dia.
 
-    A API retorna um 'feed' em formato protobuf contendo todas as
-    viagens em andamento naquele momento. Para cada viagem, temos
-    em qual parada o onibus esta e qual o atraso em segundos.
+    A API retorna um 'feed' com todas as viagens em andamento naquele
+    momento. Cada viagem reporta 1 parada (a proxima) com o delay em
+    segundos. Chamadas consecutivas capturam o onibus em paradas
+    diferentes conforme ele avanca na rota.
 
     Retorna: (numero de registros salvos, numero de viagens no feed)
     """
@@ -102,7 +110,7 @@ def coletar_uma_vez():
     criar_cabecalho(arquivo)
 
     # Chamar a API da BHTrans
-    # A resposta vem em formato protobuf (binario compacto)
+    # A resposta vem em formato protobuf (binario compacto do Google)
     feed = gtfs_realtime_pb2.FeedMessage()
     response = requests.get(URL, timeout=30)
     feed.ParseFromString(response.content)
@@ -133,12 +141,11 @@ def coletar_uma_vez():
                 vehicle_label = tu.vehicle.label if tu.HasField('vehicle') else ""
 
                 # Percorrer as paradas com informacao de atraso
+                # (BH geralmente reporta 1 parada por viagem - a proxima)
                 for stu in tu.stop_time_update:
-                    # Pegar os delays (BH manda principalmente o departure_delay)
                     arr_delay = stu.arrival.delay if stu.HasField('arrival') else ""
                     dep_delay = stu.departure.delay if stu.HasField('departure') else ""
 
-                    # Salvar uma linha no CSV
                     writer.writerow([
                         timestamp, trip_id, route_id, direction_id,
                         start_time, start_date, vehicle_id, vehicle_label,
@@ -155,9 +162,9 @@ def coletar_uma_vez():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("COLETOR GTFS-RT - BH")
+    print("COLETOR GTFS-RT - BH (Equipe 5)")
     print("=" * 60)
-    print(f"Intervalo: {INTERVALO} segundos")
+    print(f"Intervalo: {INTERVALO} segundos ({INTERVALO//60} minutos)")
     print(f"Dados salvos em: {PASTA_DADOS}/")
     print(f"Para parar: Ctrl+C")
     print("=" * 60)
@@ -170,17 +177,18 @@ if __name__ == "__main__":
             registros, entidades = coletar_uma_vez()
             coleta_num += 1
             timestamp = datetime.now().strftime("%H:%M:%S")
-            print(f"[{timestamp}] Coleta #{coleta_num}: {registros} registros de {entidades} viagens")
+            arquivo = nome_arquivo_hoje()
+            
+            # Mostrar tamanho do arquivo atual
+            tamanho_mb = os.path.getsize(arquivo) / (1024 * 1024)
+            print(f"[{timestamp}] Coleta #{coleta_num}: {registros} registros | Arquivo: {tamanho_mb:.1f} MB")
 
         except KeyboardInterrupt:
-            # Quando o usuario aperta Ctrl+C
             print(f"\n\nColeta encerrada. Total: {coleta_num} coletas realizadas.")
             print(f"Dados salvos em: {PASTA_DADOS}/")
             break
 
         except Exception as e:
-            # Se der qualquer erro (internet caiu, API nao respondeu),
-            # NAO para o script - so imprime o erro e tenta de novo
             print(f"[{datetime.now().strftime('%H:%M:%S')}] ERRO: {e}")
 
         # Esperar antes da proxima coleta
